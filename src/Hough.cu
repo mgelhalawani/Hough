@@ -30,9 +30,9 @@ void drawCircles(Mat, int*, int, int);
 
 vector<Vec2f> cpuHough(Mat);
 int * cudaBasicHough(Mat, uchar **);
-void cudaOptiHough(Mat, uchar **);
+int * cudaOptiHough(Mat, uchar **, int *);
 
-struct coor {
+struct Coor {
 	int x;
 	int y;
 };
@@ -61,8 +61,8 @@ void basicCUDA(uchar *input, int* output, int rowSize, int colSize, int MAX_D) {
 }
 
 __global__
-void cudaFilter(uchar *input, coor *output, int *actualSize,
-		int rowSize, int colSize) {
+void cudaFilter(uchar *input, Coor *output, int *actualSize, int rowSize,
+		int colSize) {
 
 	int row = blockIdx.x * blockDim.x + threadIdx.x;
 	int col = blockIdx.y * blockDim.y + threadIdx.y;
@@ -72,27 +72,43 @@ void cudaFilter(uchar *input, coor *output, int *actualSize,
 		uchar value = *(input + row * colSize + col);
 
 		if (value > 0) {
-			coor data;
+			Coor data;
 			do {
 				index++;
 				data = {col, row};
 				output[index] = data;
 			} while (output[index].x != data.x && output[index].y != data.y);
-			atomicAdd(actualSize,1);
+			atomicAdd(actualSize, 1);
 		}
 	}
 }
 
 __global__
-void cudaOptiHough (){
+void cudaOptiHough(Coor *input, int* output, int size, int MAX_D) {
+	int index = blockIdx.x * blockDim.x + threadIdx.x;
 
+	int MIN_THETA = 0;
+	int MAX_THETA = 180;
+	int d = -1;
+
+	if (index < size) {
+
+		Coor point = input[index];
+
+		for (int theta = MIN_THETA; theta <= MAX_THETA; theta += 1) {
+			d = point.x * cosf(theta) + point.y * sinf(theta);
+			if (d > 0 && d < MAX_D) {
+				atomicAdd((output + theta * MAX_THETA + d), 1);
+			}
+		}
+	}
 }
 
 int main(int argc, char** argv) {
 
 // Declare the output variables
-	Mat cannyImage, stdHostHough, stdDeviceHough;
-	const char* default_file = "/home/student/Documents/CUDA/Hough/road2.png";
+	Mat cannyImage, stdHostHough, stdDeviceHough, optiDeviceHough;
+	const char* default_file = "/home/student/Documents/CUDA/Hough/road3.png";
 	const char* filename = argc >= 2 ? argv[1] : default_file;
 
 // Loads an image
@@ -113,6 +129,7 @@ int main(int argc, char** argv) {
 // convert back the image to RGB so that we can draw coloured lines
 	cvtColor(cannyImage, stdHostHough, COLOR_GRAY2BGR);
 	stdDeviceHough = stdHostHough.clone();
+	optiDeviceHough = stdHostHough.clone();
 
 // Standard Hough Line Transform/
 	vector<Vec2f> lines; // will hold the results of the detection
@@ -124,7 +141,7 @@ int main(int argc, char** argv) {
 	auto duration =
 			chrono::duration_cast<chrono::microseconds>(time2 - time1).count();
 
-	cout << "cpu =  " << duration << "\n";
+	cout << "Standard on cpu =  " << duration << "\n";
 
 // Draw the lines
 	drawLines(stdHostHough, lines);
@@ -153,7 +170,7 @@ int main(int argc, char** argv) {
 	duration =
 			chrono::duration_cast<chrono::microseconds>(time2 - time1).count();
 
-	cout << "cuda = " << duration << "\n";
+	cout << "Standard on cuda with data copy time = " << duration << "\n";
 
 // Allocate vector output on device
 	vector<Vec2f> vecOutput;
@@ -169,15 +186,42 @@ int main(int argc, char** argv) {
 		}
 	}
 
+	free(hostOutput);
 	drawLines2(stdDeviceHough, vecOutput);
 
-	cudaOptiHough(cannyImage, rawData);
+	int *optiSize = (int *) malloc(sizeof(int));
+
+	time1 = chrono::high_resolution_clock::now();
+	int *cudaOptiOutput = cudaOptiHough(cannyImage, rawData, optiSize);
+	time2 = chrono::high_resolution_clock::now();
+
+	duration =
+			chrono::duration_cast<chrono::microseconds>(time2 - time1).count();
+
+	cout << "Optimized on cuda with data copy time  = " << duration << "\n";
+
+	// Allocate vector output on device
+	vector<Vec2f> vecOutput2;
+
+	for (int row = 0; row < *optiSize; row++) {
+		for (int col = 0; col < 180; col++) {
+			if (*(cudaOptiOutput + row * 180 + col) > 350) {
+				Vec2f vec = Vec2f(row, col);
+				iterator = vecOutput2.begin();
+				vecOutput2.insert(iterator, vec);
+			}
+		}
+	}
+
+	drawLines2(optiDeviceHough, vecOutput2);
 
 // Show results
 	imwrite("./Source.png", srcImage);
 	imwrite("./Standard-Hough.png", stdHostHough);
 	imwrite("./Device-Standard-Hough.png", stdDeviceHough);
+	imwrite("./Device-Opti-Hough.png", stdDeviceHough);
 
+	free(rawData);
 	return 0;
 }
 
@@ -209,36 +253,44 @@ int* cudaBasicHough(Mat cannyImage, uchar **rawData) {
 	int gridCols = (cannyImage.cols + blockSize.y - 1) / blockSize.y;
 	dim3 gridSize = dim3(gridRows, gridCols);
 
+	auto time1 = chrono::high_resolution_clock::now();
+
 	basicCUDA<<<gridSize, blockSize>>>(deviceInput, deviceOutput,
 			cannyImage.rows, cannyImage.cols, MAX_D);
 
 	cudaDeviceSynchronize();
 
+	auto time2 = chrono::high_resolution_clock::now();
+
+	auto duration =
+			chrono::duration_cast<chrono::microseconds>(time2 - time1).count();
+
+	cout << "Standard on cuda without data copy time =  " << duration << "\n";
+
 	int *hostOutput = (int *) calloc(cannyImage.rows * cannyImage.cols,
 			sizeof(int));
-// Copy image to device
+	// Copy image from device
 	cudaMemcpy(hostOutput, deviceOutput, size, cudaMemcpyDeviceToHost);
 	cudaFree(deviceInput);
 	cudaFree(deviceOutput);
 	return hostOutput;
 }
 
-void cudaOptiHough(Mat cannyImage, uchar **rawData) {
-	int size = cannyImage.rows * cannyImage.cols * sizeof(coor);
+int* cudaOptiHough(Mat cannyImage, uchar **rawData, int *houghSize) {
+	int size = cannyImage.rows * cannyImage.cols * sizeof(Coor);
 
 	uchar *deviceInput;
 	cudaMalloc((void **) &deviceInput, size);
+	// Copy image to device
+	cudaMemcpy(deviceInput, rawData[0], size, cudaMemcpyHostToDevice);
+
+	// Allocate output matrix on device
+	Coor *pointsList;
+	cudaMalloc(&pointsList, size);
 
 	int *deviceSize;
 	cudaMalloc((void **) &deviceSize, sizeof(int));
 	cudaMemset(deviceSize, 0, sizeof(int));
-
-	// Copy image to device
-	cudaMemcpy(deviceInput, rawData[0], size, cudaMemcpyHostToDevice);
-
-// Allocate output matrix on device
-	coor *deviceOutput;
-	cudaMalloc(&deviceOutput, size);
 
 // Define block and grid size
 	dim3 blockSize(32, 32);
@@ -246,32 +298,45 @@ void cudaOptiHough(Mat cannyImage, uchar **rawData) {
 	int gridCols = (cannyImage.cols + blockSize.y - 1) / blockSize.y;
 	dim3 gridSize = dim3(gridRows, gridCols);
 
-	cudaFilter<<<gridSize, blockSize>>>(deviceInput, deviceOutput,
-			deviceSize, cannyImage.rows, cannyImage.cols);
+	int MAX_D = sqrt(pow(cannyImage.rows, 2) + pow(cannyImage.cols, 2));
+
+	auto time1 = chrono::high_resolution_clock::now();
+
+	cudaFilter<<<gridSize, blockSize>>>(deviceInput, pointsList, deviceSize,
+			cannyImage.rows, cannyImage.cols);
 
 	cudaDeviceSynchronize();
 
-	coor *hostOutput = (coor *) malloc(size);
+	int dataSize;
+	cudaMemcpy(&dataSize, deviceSize, sizeof(int), cudaMemcpyDeviceToHost);
 
-// Copy image to device
-	cudaMemcpy(hostOutput, deviceOutput, size, cudaMemcpyDeviceToHost);
+	int *deviceHoughOutput;
+	cudaMalloc(&deviceHoughOutput, dataSize * 180 * sizeof(int));
+	cudaMemset(deviceHoughOutput, 0, dataSize * 180 * sizeof(int));
+
+	cudaOptiHough<<<gridSize, blockSize>>>(pointsList, deviceHoughOutput,
+			dataSize, MAX_D);
+
+	cudaDeviceSynchronize();
+
+	auto time2 = chrono::high_resolution_clock::now();
+
+	auto duration =
+			chrono::duration_cast<chrono::microseconds>(time2 - time1).count();
+
+	cout << "Optimized on cuda without data copy time =  " << duration << "\n";
+
+	*houghSize = dataSize;
+
+	int *hostOutput = (int *) calloc(dataSize * 180, sizeof(int));
+	cudaMemcpy(hostOutput, deviceHoughOutput, dataSize * 180 * sizeof(int),
+			cudaMemcpyDeviceToHost);
+
+	cudaFree(pointsList);
+	cudaFree(deviceHoughOutput);
 	cudaFree(deviceInput);
-	cudaFree(deviceOutput);
 
-	int *dataSize = (int *) malloc(sizeof(int));
-	cudaMemcpy(dataSize, deviceSize, sizeof(int), cudaMemcpyDeviceToHost);
-
-	cout << "dataSize = " << *dataSize;
-
-//	for (int i = 0; i < cannyImage.rows * cannyImage.cols; i++) {
-//		if (hostOutput[i].x > 877) {
-//			cout << "x = " << hostOutput[i].x << ", y = " << hostOutput[i].y
-//					<< "\n";
-//		}
-//	}
-	free(hostOutput);
-	free(dataSize);
-
+	return hostOutput;
 }
 
 void drawLines(Mat cdst, vector<Vec2f> lines) {
