@@ -37,14 +37,15 @@ struct Coor {
 	int y;
 };
 
+#define THRESHOLD 350
+#define MIN_THETA  0
+#define MAX_THETA 180
+
 __global__
 void basicCUDA(uchar *input, int* output, int rowSize, int colSize, int MAX_D) {
 
 	int row = blockIdx.x * blockDim.x + threadIdx.x;
 	int col = blockIdx.y * blockDim.y + threadIdx.y;
-
-	int MIN_THETA = 0;
-	int MAX_THETA = 180;
 	int d = -1;
 
 	if (row < rowSize && col < colSize) {
@@ -86,9 +87,6 @@ void cudaFilter(uchar *input, Coor *output, int *actualSize, int rowSize,
 __global__
 void cudaOptiHough(Coor *input, int* output, int size, int MAX_D) {
 	int index = blockIdx.x * blockDim.x + threadIdx.x;
-
-	int MIN_THETA = 0;
-	int MAX_THETA = 180;
 	int d = -1;
 
 	if (index < size) {
@@ -176,9 +174,9 @@ int main(int argc, char** argv) {
 	vector<Vec2f> vecOutput;
 	vector<Vec2f>::iterator iterator;
 
-	for (int row = 0; row < 180; row++) {
-		for (int col = 0; col < 1280; col++) {
-			if (*(hostOutput + row * cannyImage.cols + col) > 350) {
+	for (int row = 0; row < MAX_THETA; row++) {
+		for (int col = 0; col < cannyImage.cols; col++) {
+			if (*(hostOutput + row * cannyImage.cols + col) > THRESHOLD) {
 				Vec2f vec = Vec2f(row, col);
 				iterator = vecOutput.begin();
 				vecOutput.insert(iterator, vec);
@@ -204,8 +202,8 @@ int main(int argc, char** argv) {
 	vector<Vec2f> vecOutput2;
 
 	for (int row = 0; row < *optiSize; row++) {
-		for (int col = 0; col < 180; col++) {
-			if (*(cudaOptiOutput + row * 180 + col) > 350) {
+		for (int col = 0; col < MAX_THETA; col++) {
+			if (*(cudaOptiOutput + row * MAX_THETA + col) > THRESHOLD) {
 				Vec2f vec = Vec2f(row, col);
 				iterator = vecOutput2.begin();
 				vecOutput2.insert(iterator, vec);
@@ -227,7 +225,7 @@ int main(int argc, char** argv) {
 
 vector<Vec2f> cpuHough(Mat cannyImage) {
 	vector<Vec2f> lines;
-	HoughLines(cannyImage, lines, 1, CV_PI / 180, 350, 0, 0); // runs the actual detection
+	HoughLines(cannyImage, lines, 1, CV_PI / 180, THRESHOLD, 0, 0); // runs the actual detection
 	return lines;
 }
 
@@ -311,8 +309,8 @@ int* cudaOptiHough(Mat cannyImage, uchar **rawData, int *houghSize) {
 	cudaMemcpy(&dataSize, deviceSize, sizeof(int), cudaMemcpyDeviceToHost);
 
 	int *deviceHoughOutput;
-	cudaMalloc(&deviceHoughOutput, dataSize * 180 * sizeof(int));
-	cudaMemset(deviceHoughOutput, 0, dataSize * 180 * sizeof(int));
+	cudaMalloc(&deviceHoughOutput, dataSize * MAX_THETA * sizeof(int));
+	cudaMemset(deviceHoughOutput, 0, dataSize * MAX_THETA * sizeof(int));
 
 	cudaOptiHough<<<gridSize, blockSize>>>(pointsList, deviceHoughOutput,
 			dataSize, MAX_D);
@@ -328,8 +326,8 @@ int* cudaOptiHough(Mat cannyImage, uchar **rawData, int *houghSize) {
 
 	*houghSize = dataSize;
 
-	int *hostOutput = (int *) calloc(dataSize * 180, sizeof(int));
-	cudaMemcpy(hostOutput, deviceHoughOutput, dataSize * 180 * sizeof(int),
+	int *hostOutput = (int *) calloc(dataSize * MAX_THETA, sizeof(int));
+	cudaMemcpy(hostOutput, deviceHoughOutput, dataSize * MAX_THETA * sizeof(int),
 			cudaMemcpyDeviceToHost);
 
 	cudaFree(pointsList);
