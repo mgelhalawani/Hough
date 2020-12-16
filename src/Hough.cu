@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
 
 // Declare the output variables
 	Mat cannyImage, stdHostHough, stdDeviceHough, optiDeviceHough;
-	const char* default_file = "/home/student/Documents/CUDA/Hough/road3.png";
+	const char* default_file = "/home/student/Documents/CUDA/Hough/road8.png";
 	const char* filename = argc >= 2 ? argv[1] : default_file;
 
 // Loads an image
@@ -232,8 +232,10 @@ vector<Vec2f> cpuHough(Mat cannyImage) {
 int* cudaBasicHough(Mat cannyImage, uchar **rawData) {
 // Allocate input matrix on device
 	uchar *deviceInput;
-	int size = cannyImage.rows * cannyImage.cols * sizeof(int);
+	int size = cannyImage.rows * cannyImage.cols * sizeof(uchar);
+
 	cudaMalloc((void **) &deviceInput, size);
+
 
 // Copy image to device
 	cudaMemcpy(deviceInput, rawData[0], size, cudaMemcpyHostToDevice);
@@ -244,6 +246,8 @@ int* cudaBasicHough(Mat cannyImage, uchar **rawData) {
 	cudaMemset(deviceOutput, 0, size);
 
 	int MAX_D = sqrt(pow(cannyImage.rows, 2) + pow(cannyImage.cols, 2));
+
+	cout << "rows: " << cannyImage.rows << ", cols: " << cannyImage.cols << "\n";
 
 // Define block and grid size
 	dim3 blockSize(32, 32);
@@ -275,10 +279,12 @@ int* cudaBasicHough(Mat cannyImage, uchar **rawData) {
 }
 
 int* cudaOptiHough(Mat cannyImage, uchar **rawData, int *houghSize) {
-	int size = cannyImage.rows * cannyImage.cols * sizeof(Coor);
+	int size = cannyImage.rows * cannyImage.cols * sizeof(uchar);
 
 	uchar *deviceInput;
+
 	cudaMalloc((void **) &deviceInput, size);
+
 	// Copy image to device
 	cudaMemcpy(deviceInput, rawData[0], size, cudaMemcpyHostToDevice);
 
@@ -305,6 +311,8 @@ int* cudaOptiHough(Mat cannyImage, uchar **rawData, int *houghSize) {
 
 	cudaDeviceSynchronize();
 
+	auto time11 = chrono::high_resolution_clock::now();
+
 	int dataSize;
 	cudaMemcpy(&dataSize, deviceSize, sizeof(int), cudaMemcpyDeviceToHost);
 
@@ -312,14 +320,23 @@ int* cudaOptiHough(Mat cannyImage, uchar **rawData, int *houghSize) {
 	cudaMalloc(&deviceHoughOutput, dataSize * MAX_THETA * sizeof(int));
 	cudaMemset(deviceHoughOutput, 0, dataSize * MAX_THETA * sizeof(int));
 
+	auto time21 = chrono::high_resolution_clock::now();
 	cudaOptiHough<<<gridSize, blockSize>>>(pointsList, deviceHoughOutput,
 			dataSize, MAX_D);
 
 	cudaDeviceSynchronize();
-
 	auto time2 = chrono::high_resolution_clock::now();
 
 	auto duration =
+					chrono::duration_cast<chrono::microseconds>(time11 - time1).count();
+	cout << "filter step on =  " << duration << "\n";
+
+	duration =
+					chrono::duration_cast<chrono::microseconds>(time2 - time21).count();
+
+	cout << "Hough Step on cuda =  " << duration << "\n";
+
+	duration =
 			chrono::duration_cast<chrono::microseconds>(time2 - time1).count();
 
 	cout << "Optimized on cuda without data copy time =  " << duration << "\n";
