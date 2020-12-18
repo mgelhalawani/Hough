@@ -106,7 +106,7 @@ int main(int argc, char** argv) {
 
 // Declare the output variables
 	Mat cannyImage, stdHostHough, stdDeviceHough, optiDeviceHough;
-	const char* default_file = "/home/student/Documents/CUDA/Hough/road8.png";
+	const char* default_file = "/home/student/Documents/CUDA/Hough/road3.png";
 	const char* filename = argc >= 2 ? argv[1] : default_file;
 
 // Loads an image
